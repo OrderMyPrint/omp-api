@@ -1,0 +1,184 @@
+// Order My Print — database schema (PostgreSQL).
+// Source: docs repo docs/architecture/data-model.md. Phase 3 slice 1: catalogue,
+// tax profiles and versioned pricing. Later slices add identity, cart, artwork,
+// quotations, orders, payments, production and billing.
+
+generator client {
+  provider      = "prisma-client-js"
+  // "rhel-openssl-3.0.x" is the Vercel Functions runtime (Node 22).
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Direct (unpooled) connection for migrations; DATABASE_URL may be a pooled URL on Vercel.
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+/// GST profile per product. Values are supplied by the business and confirmed by the CA (D-28).
+model TaxProfile {
+  id            String    @id @default(uuid()) @db.Uuid
+  name          String    @unique
+  hsnSac        String?   @map("hsn_sac")
+  gstRate       Decimal   @map("gst_rate") @db.Decimal(5, 2)
+  effectiveFrom DateTime  @default(now()) @map("effective_from")
+  note          String?
+  products      Product[]
+
+  @@map("tax_profiles")
+}
+
+model Category {
+  id        String    @id @default(uuid()) @db.Uuid
+  slug      String    @unique
+  name      String
+  summary   String
+  lead      String
+  about     String
+  imageUrl  String    @map("image_url")
+  sort      Int       @default(0)
+  isVisible Boolean   @default(true) @map("is_visible")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  products  Product[]
+
+  @@map("categories")
+}
+
+enum QuantityMode {
+  TIERS
+  SIZES
+}
+
+enum UploadTiming {
+  BEFORE_CART
+  AFTER_CHECKOUT
+  EITHER
+}
+
+model Product {
+  id                String           @id @default(uuid()) @db.Uuid
+  categoryId        String           @map("category_id") @db.Uuid
+  category          Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  slug              String           @unique
+  name              String
+  summary           String
+  lead              String
+  description       String
+  imageUrl          String           @map("image_url")
+  sort              Int              @default(0)
+  isVisible         Boolean          @default(true) @map("is_visible")
+  unitOne           String           @map("unit_one")
+  unitMany          String           @map("unit_many")
+  turnaroundMinDays Int              @map("turnaround_min_days")
+  turnaroundMaxDays Int              @map("turnaround_max_days")
+  quantityMode      QuantityMode     @default(TIERS) @map("quantity_mode")
+  /// Size list for SIZES products, in display order (e.g. XS…3XL).
+  sizes             String[]         @default([])
+  /// Example size breakdown shown on first load.
+  defaultSizes      Json?            @map("default_sizes")
+  uploadTiming      UploadTiming     @default(EITHER) @map("upload_timing")
+  /// Key specs as [{label, value}] for display.
+  specs             Json             @default("[]")
+  uses              String[]         @default([])
+  materials         String[]         @default([])
+  taxProfileId      String           @map("tax_profile_id") @db.Uuid
+  taxProfile        TaxProfile       @relation(fields: [taxProfileId], references: [id], onDelete: Restrict)
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  optionGroups      OptionGroup[]
+  artworkSlots      ArtworkSlot[]
+  pricingVersions   PricingVersion[]
+
+  @@index([categoryId])
+  @@map("products")
+}
+
+enum OptionGroupKind {
+  SELECT
+  SWATCH
+  MULTISELECT
+}
+
+model OptionGroup {
+  id          String          @id @default(uuid()) @db.Uuid
+  productId   String          @map("product_id") @db.Uuid
+  product     Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  key         String
+  label       String
+  /// Shorter label for price lines (e.g. "Paper" for "Choose paper stock").
+  shortLabel  String?         @map("short_label")
+  hint        String
+  note        String?
+  kind        OptionGroupKind @default(SELECT)
+  stepOrder   Int             @map("step_order")
+  required    Boolean         @default(true)
+  /// Default option key(s) pre-selected in the configurator.
+  defaultKeys String[]        @default([]) @map("default_keys")
+  options     Option[]
+
+  @@unique([productId, key])
+  @@map("option_groups")
+}
+
+model Option {
+  id                String      @id @default(uuid()) @db.Uuid
+  groupId           String      @map("group_id") @db.Uuid
+  group             OptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  key               String
+  label             String
+  detail            String?
+  /// CSS colour for SWATCH groups.
+  swatch            String?
+  sort              Int         @default(0)
+  isAvailable       Boolean     @default(true) @map("is_available")
+  /// Why an option cannot be ordered online (e.g. "Priced on quotation").
+  unavailableReason String?     @map("unavailable_reason")
+
+  @@unique([groupId, key])
+  @@map("options")
+}
+
+model ArtworkSlot {
+  id            String   @id @default(uuid()) @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  key           String
+  label         String
+  printArea     String   @map("print_area")
+  bleedMm       Decimal? @map("bleed_mm") @db.Decimal(5, 1)
+  safeMm        Decimal? @map("safe_mm") @db.Decimal(5, 1)
+  acceptedTypes String[] @default(["pdf", "png", "jpg", "jpeg", "svg", "cdr"]) @map("accepted_types")
+  maxMb         Int      @default(50) @map("max_mb")
+  sort          Int      @default(0)
+
+  @@unique([productId, key])
+  @@map("product_artwork_slots")
+}
+
+enum PricingStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// Versioned pricing document per product (docs/prd/product-catalogue-and-pricing.md §4).
+/// Only one PUBLISHED version per product at a time (partial unique index in the migration).
+model PricingVersion {
+  id            String        @id @default(uuid()) @db.Uuid
+  productId     String        @map("product_id") @db.Uuid
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  versionNo     Int           @map("version_no")
+  status        PricingStatus @default(DRAFT)
+  effectiveFrom DateTime      @default(now()) @map("effective_from")
+  effectiveTo   DateTime?     @map("effective_to")
+  /// Typed pricing components — validated by src/pricing/pricing-document.ts. No code is ever evaluated.
+  document      Json
+  note          String?
+  createdAt     DateTime      @default(now()) @map("created_at")
+  publishedAt   DateTime?     @map("published_at")
+
+  @@unique([productId, versionNo])
+  @@map("pricing_versions")
+}

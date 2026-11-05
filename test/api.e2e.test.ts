@@ -130,6 +130,13 @@ describe("pricing preview", () => {
     expect(other.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
+  it("serves the docs page from the pinned CDN with integrity hashes", async () => {
+    const res = await request(http).get("/api/v1/docs").expect(200);
+    expect(res.text.match(/integrity="sha384-/g)).toHaveLength(3);
+    expect(res.headers["content-security-policy"]).toContain("script-src 'self' https://cdn.jsdelivr.net");
+    await request(http).get("/api/v1/docs/init.js").expect(200);
+  });
+
   it("publishes an OpenAPI document", async () => {
     const res = await request(http).get("/api/v1/openapi.json").expect(200);
     expect(Object.keys(res.body.paths)).toEqual(

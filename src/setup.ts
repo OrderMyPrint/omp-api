@@ -5,6 +5,7 @@ import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 import { AppModule } from "./app.module";
 import { ProblemFilter } from "./common/problem";
+import { DOCS_CDN_ORIGIN, mountDocs } from "./docs";
 
 export const API_PREFIX = "api/v1";
 
@@ -22,7 +23,17 @@ export function configureApp(app: INestApplication): INestApplication {
   express.disable("x-powered-by");
   express.set("trust proxy", 1); // behind Vercel's proxy: real client IP for rate limiting
   express.useBodyParser("json", { limit: "100kb" });
-  app.use(helmet());
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        // The API returns JSON; the only HTML is the docs page, whose scripts come from one pinned CDN with SRI.
+        directives: {
+          "script-src": ["'self'", DOCS_CDN_ORIGIN],
+          "style-src": ["'self'", DOCS_CDN_ORIGIN, "'unsafe-inline'"],
+        },
+      },
+    }),
+  );
   // Storefront origins may call public endpoints without credentials; only admin
   // origins may send the staff session cookie (credentials) to /admin routes.
   const storefront = new Set(allowedOrigins());
@@ -50,8 +61,10 @@ export function configureApp(app: INestApplication): INestApplication {
     .setVersion("0.1.0")
     .build();
   SwaggerModule.setup(`${API_PREFIX}/docs`, app, SwaggerModule.createDocument(app, config), {
+    ui: false, // served by mountDocs from a pinned CDN copy (works inside a Vercel Function)
     jsonDocumentUrl: `${API_PREFIX}/openapi.json`,
   });
+  mountDocs(app, API_PREFIX);
   return app;
 }
 

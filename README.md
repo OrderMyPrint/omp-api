@@ -59,7 +59,7 @@ name doesn't end in `_test`, applies migrations and runs the idempotent seed; it
 
 ```
 src/
-  app.ts                 Entrypoint (Vercel detects src/app.ts)
+  main.ts                Entrypoint — imports @nestjs/core directly so Vercel detects NestJS
   setup.ts               Shared app configuration: prefix, helmet, CORS allow-list, body limit, errors, OpenAPI
   catalogue/             Categories and products (read model from PostgreSQL)
   pricing/

@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nestjs",
   "regions": ["bom1"],
   "buildCommand": "npm run build"
 }

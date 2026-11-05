@@ -23,11 +23,23 @@ export function configureApp(app: INestApplication): INestApplication {
   express.set("trust proxy", 1); // behind Vercel's proxy: real client IP for rate limiting
   express.useBodyParser("json", { limit: "100kb" });
   app.use(helmet());
-  app.enableCors({
-    origin: allowedOrigins(),
-    methods: ["GET", "POST", "PATCH", "DELETE"],
-    credentials: true,
-    maxAge: 600,
+  // Storefront origins may call public endpoints without credentials; only admin
+  // origins may send the staff session cookie (credentials) to /admin routes.
+  const storefront = new Set(allowedOrigins());
+  const admin = new Set(allowedOrigins(process.env.ADMIN_ORIGINS ?? ""));
+  app.enableCors((req: { headers: { origin?: string } }, cb: (err: Error | null, options: object) => void) => {
+    const origin = req.headers.origin ?? "";
+    if (admin.has(origin))
+      return cb(null, {
+        origin: true,
+        credentials: true,
+        methods: ["GET", "POST", "PATCH", "DELETE"],
+        allowedHeaders: ["content-type", "x-csrf-token"],
+        maxAge: 600,
+      });
+    if (storefront.has(origin))
+      return cb(null, { origin: true, credentials: false, methods: ["GET", "POST"], maxAge: 600 });
+    return cb(null, { origin: false });
   });
   app.setGlobalPrefix(API_PREFIX);
   app.useGlobalFilters(new ProblemFilter());

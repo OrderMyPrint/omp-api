@@ -10,6 +10,7 @@
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { categories, products, type ConfigStep } from "./reference/catalogue";
 import { canonical, pricingDocumentFor } from "./seed-helpers";
+import { DEFAULT_ROLES, OWNER_ROLE_KEY } from "../src/auth/permissions";
 
 const prisma = new PrismaClient();
 const kindFor = (step: ConfigStep) =>
@@ -140,6 +141,14 @@ async function main() {
         },
       });
     });
+  }
+
+  // Staff roles: created once (later edits by an Owner are kept); Owner is always synced to every permission.
+  for (const role of DEFAULT_ROLES) {
+    const existing = await prisma.role.findUnique({ where: { key: role.key } });
+    if (!existing) await prisma.role.create({ data: role });
+    else if (role.key === OWNER_ROLE_KEY)
+      await prisma.role.update({ where: { key: role.key }, data: { permissions: role.permissions, isSystem: true } });
   }
 
   const counts = await Promise.all([

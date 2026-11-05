@@ -8,6 +8,12 @@ const testEnv = {
   DATABASE_URL: testDatabaseUrl,
   DATABASE_URL_UNPOOLED: testDatabaseUrl,
   CORS_ORIGINS: "http://localhost:3000",
+  ADMIN_ORIGINS: "http://localhost:5173",
+  ADMIN_APP_URL: "http://localhost:5173",
+  COOKIE_SECURE: "false",
+  THROTTLE_DISABLED: "true",
+  // Test-only key (not a secret): 32 zero bytes.
+  STAFF_SECRET_KEY: Buffer.alloc(32).toString("base64"),
 };
 Object.assign(process.env, testEnv); // for test/global-setup.ts (runs in this process)
 

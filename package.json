@@ -50,7 +50,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run typecheck && npm test",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "admin:create-owner": "tsx --env-file-if-exists=.env scripts/create-owner.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

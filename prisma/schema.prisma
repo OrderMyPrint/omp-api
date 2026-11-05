@@ -182,3 +182,118 @@ model PricingVersion {
   @@unique([productId, versionNo])
   @@map("pricing_versions")
 }
+
+// ---------------------------------------------------------------------------
+// Identity, staff access control (RBAC) and audit — Phase 3 slice 2.
+// Customers (mobile + OTP) share the users table later; staff sign in with
+// email + password + TOTP (docs repo: architecture.md §2, admin-audit-2026-11-05.md).
+// ---------------------------------------------------------------------------
+
+enum UserKind {
+  CUSTOMER
+  STAFF
+}
+
+enum StaffStatus {
+  INVITED
+  ACTIVE
+  DEACTIVATED
+}
+
+model User {
+  id            String            @id @default(uuid()) @db.Uuid
+  kind          UserKind
+  /// Stored lower-case. Required for staff (check constraint).
+  email         String?           @unique
+  phoneE164     String?           @unique @map("phone_e164")
+  name          String
+  passwordHash  String?           @map("password_hash")
+  /// AES-256-GCM encrypted base32 secret (STAFF_SECRET_KEY). Set but not enabled during enrolment.
+  totpSecretEnc String?           @map("totp_secret_enc")
+  totpEnabledAt DateTime?         @map("totp_enabled_at")
+  /// Last accepted TOTP time-step; a code is never accepted twice (replay protection).
+  totpLastStep  Int?              @map("totp_last_step")
+  staffStatus   StaffStatus?      @map("staff_status")
+  roleId        String?           @map("role_id") @db.Uuid
+  role          Role?             @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  failedLogins  Int               @default(0) @map("failed_logins")
+  lockedUntil   DateTime?         @map("locked_until")
+  lastActiveAt  DateTime?         @map("last_active_at")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  sessions      StaffSession[]
+  invitations   StaffInvitation[] @relation("InvitedUser")
+
+  @@index([roleId])
+  @@map("users")
+}
+
+/// A staff role: a named bundle of permission keys (src/auth/permissions.ts).
+/// The system Owner role always holds every permission and cannot be edited or deleted.
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique
+  name        String   @unique
+  description String   @default("")
+  isSystem    Boolean  @default(false) @map("is_system")
+  permissions String[] @default([])
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  users       User[]
+
+  @@map("staff_roles")
+}
+
+model StaffSession {
+  id            String    @id @default(uuid()) @db.Uuid
+  /// SHA-256 of the cookie token; the token itself is never stored.
+  tokenHash     String    @unique @map("token_hash")
+  userId        String    @map("user_id") @db.Uuid
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mfaVerifiedAt DateTime? @map("mfa_verified_at")
+  stepUpAt      DateTime? @map("step_up_at")
+  csrfToken     String    @map("csrf_token")
+  ip            String?
+  userAgent     String?   @map("user_agent")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at")
+  expiresAt     DateTime  @map("expires_at")
+  revokedAt     DateTime? @map("revoked_at")
+
+  @@index([userId])
+  @@map("staff_sessions")
+}
+
+model StaffInvitation {
+  id          String    @id @default(uuid()) @db.Uuid
+  tokenHash   String    @unique @map("token_hash")
+  userId      String    @map("user_id") @db.Uuid
+  user        User      @relation("InvitedUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedById String?   @map("invited_by_id") @db.Uuid
+  expiresAt   DateTime  @map("expires_at")
+  acceptedAt  DateTime? @map("accepted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("staff_invitations")
+}
+
+/// Append-only (UPDATE/DELETE blocked by trigger). Never store secrets or tokens here.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @map("actor_id") @db.Uuid
+  actorKind  String   @map("actor_kind")
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  at         DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([actorId])
+  @@index([at])
+  @@map("audit_logs")
+}

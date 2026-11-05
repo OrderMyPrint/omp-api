@@ -220,6 +220,11 @@ describe("owner safeguards and deactivation", () => {
       .send({ status: "DEACTIVATED" })
       .expect(409);
     expect(self.body.code).toBe("SELF_CHANGE_FORBIDDEN");
+    // Other test files create Owners too; make this test's Owner the only active one.
+    await prisma.user.updateMany({
+      where: { kind: "STAFF", role: { key: "owner" }, id: { not: owner.userId } },
+      data: { staffStatus: "DEACTIVATED" },
+    });
     const sales = await prisma.role.findUniqueOrThrow({ where: { key: "sales" } });
     const last = await admin.agent
       .patch(`/api/v1/admin/staff/${owner.userId}`)

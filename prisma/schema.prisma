@@ -297,3 +297,131 @@ model AuditLog {
   @@index([at])
   @@map("audit_logs")
 }
+
+// ---------------------------------------------------------------------------
+// Website content (admin AD-WEB-01…06) — Phase 3 slice 3.
+// Pages are typed section documents (no raw HTML), versioned draft → published.
+// ---------------------------------------------------------------------------
+
+enum PageType {
+  HOMEPAGE
+  CONTENT
+  SYSTEM
+  POLICY
+  LANDING
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model ContentPage {
+  id        String               @id @default(uuid()) @db.Uuid
+  /// Stable identifier used by the storefront, e.g. "home", "about", "policy-shipping".
+  key       String               @unique
+  /// Public path, e.g. "/", "/about", "/policies/shipping".
+  path      String               @unique
+  title     String
+  type      PageType             @default(CONTENT)
+  createdAt DateTime             @default(now()) @map("created_at")
+  updatedAt DateTime             @updatedAt @map("updated_at")
+  versions  ContentPageVersion[]
+
+  @@map("content_pages")
+}
+
+model ContentPageVersion {
+  id            String        @id @default(uuid()) @db.Uuid
+  pageId        String        @map("page_id") @db.Uuid
+  page          ContentPage   @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  versionNo     Int           @map("version_no")
+  status        ContentStatus @default(DRAFT)
+  /// { title, seo, blocks[] } — validated by src/content/page-document.ts.
+  document      Json
+  createdById   String?       @map("created_by_id") @db.Uuid
+  publishedById String?       @map("published_by_id") @db.Uuid
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  publishedAt   DateTime?     @map("published_at")
+
+  @@unique([pageId, versionNo])
+  @@map("content_page_versions")
+}
+
+/// Header utility links, category bar and footer columns; draft and published copies.
+model NavigationMenu {
+  id          String    @id @default(uuid()) @db.Uuid
+  key         String    @unique
+  draft       Json
+  published   Json?
+  publishedAt DateTime? @map("published_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("navigation_menus")
+}
+
+/// Single row ("site"): brand, contact details, announcement bar, SEO defaults.
+model SiteSettings {
+  id          String    @id @default("site")
+  draft       Json
+  published   Json?
+  publishedAt DateTime? @map("published_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("site_settings")
+}
+
+model FaqTopic {
+  id    String    @id @default(uuid()) @db.Uuid
+  key   String    @unique
+  title String
+  sort  Int       @default(0)
+  items FaqItem[]
+
+  @@map("faq_topics")
+}
+
+model FaqItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  topicId        String   @map("topic_id") @db.Uuid
+  topic          FaqTopic @relation(fields: [topicId], references: [id], onDelete: Restrict)
+  question       String
+  answer         String
+  sort           Int      @default(0)
+  showOnHomepage Boolean  @default(false) @map("show_on_homepage")
+  isPublished    Boolean  @default(true) @map("is_published")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([topicId])
+  @@map("faq_items")
+}
+
+/// Images used on pages. Upload to object storage arrives with D-05; until then
+/// assets reference files already shipped with the storefront (e.g. /images/hero.png).
+model MediaAsset {
+  id        String   @id @default(uuid()) @db.Uuid
+  url       String   @unique
+  fileName  String   @map("file_name")
+  mimeType  String   @map("mime_type")
+  width     Int?
+  height    Int?
+  sizeBytes Int?     @map("size_bytes")
+  /// Required before an image can appear on a published page.
+  alt       String   @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("media_assets")
+}
+
+model Redirect {
+  id        String   @id @default(uuid()) @db.Uuid
+  fromPath  String   @unique @map("from_path")
+  toPath    String   @map("to_path")
+  permanent Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("redirects")
+}

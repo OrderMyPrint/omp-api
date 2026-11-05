@@ -11,6 +11,7 @@ import { PrismaClient, type Prisma } from "@prisma/client";
 import { categories, products, type ConfigStep } from "./reference/catalogue";
 import { canonical, pricingDocumentFor } from "./seed-helpers";
 import { DEFAULT_ROLES, OWNER_ROLE_KEY } from "../src/auth/permissions";
+import { seedContent } from "./seed-content";
 
 const prisma = new PrismaClient();
 const kindFor = (step: ConfigStep) =>
@@ -150,6 +151,8 @@ async function main() {
     else if (role.key === OWNER_ROLE_KEY)
       await prisma.role.update({ where: { key: role.key }, data: { permissions: role.permissions, isSystem: true } });
   }
+
+  await seedContent(prisma);
 
   const counts = await Promise.all([
     prisma.category.count(),

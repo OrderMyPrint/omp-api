@@ -3,6 +3,7 @@ import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { AuthModule } from "./auth/auth.module";
 import { CatalogueModule } from "./catalogue/catalogue.module";
+import { ContentModule } from "./content/content.module";
 import { HealthController } from "./health/health.controller";
 import { PricingModule } from "./pricing/pricing.module";
 import { PrismaModule } from "./prisma/prisma.module";
@@ -20,6 +21,7 @@ import { PrismaModule } from "./prisma/prisma.module";
     CatalogueModule,
     PricingModule,
     AuthModule,
+    ContentModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

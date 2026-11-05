@@ -70,6 +70,34 @@ invitation links are shown to the inviting Owner to share directly.
 | `POST /admin/roles`, `PATCH/DELETE /admin/roles/{id}` | `roles.manage` + step-up |
 | `GET /admin/audit` | `audit.read` |
 
+## Website content
+
+Everything on the storefront is editable from the admin (Figma AD-WEB-01…06) and served from here. Content is typed
+data validated by `src/content/schemas.ts` — there is **no raw HTML**, links are typed (page, category, product, path or
+https URL), and unknown fields are rejected.
+
+| Area | What it holds | Publish rule |
+| --- | --- | --- |
+| Pages | `{ title, overline, lead, seo, blocks[] }`; 13 section types (hero, assurance strip, category tiles, product carousel, price estimator, steps, CTA band, image gallery, FAQ list, rich text, image + text, cards, notice) | One draft per page → publish (`content.publish`). Published versions are kept as history (DB-immutable) and can be restored into the draft |
+| Navigation | Utility links, category bar, footer columns | Draft → publish (`navigation.write` + `content.publish`); links to unpublished pages are hidden |
+| Site settings | Brand, contact details, announcement bar (with dates), SEO defaults | Draft → publish (`site_settings.write` + `content.publish`) |
+| FAQ | Topics and questions; "show on homepage" flag | Editing needs `content.write`; publishing/unpublishing needs `content.publish` |
+| Media | Images with required alt text; usage list; in-use images can't be deleted | Upload arrives with object storage (D-05); for now images shipped with the storefront are registered |
+| Redirects | 301/302 from old paths; loops and chains rejected | `site_settings.write` |
+
+Publishing checks every reference first (products, categories, pages, FAQ, images and their alt text) and refuses with
+`422 REFERENCE_INVALID` listing what to fix. Public endpoints return only published content, resolved for the
+storefront:
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/api/v1/content/pages?path=/about` | A published page with sections resolved (product cards, categories, FAQ answers, image URLs + alt) |
+| GET | `/api/v1/content/navigation` | Utility links, category bar, footer columns with resolved `href`s |
+| GET | `/api/v1/content/site-settings` | Brand, contact, the announcement if active now, SEO defaults, redirects |
+| GET | `/api/v1/content/faq` | Published FAQ by topic |
+
+`npm run db:seed` loads the content the storefront shows today (create-only — edits made in admin are never overwritten).
+
 ## Getting started
 
 Requires Node 22.12+ and PostgreSQL 16+.

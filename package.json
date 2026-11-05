@@ -40,8 +40,8 @@
   },
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.build.json",
-    "start": "node dist/app.js",
-    "dev": "tsc -p tsconfig.build.json && node --enable-source-maps dist/app.js",
+    "start": "node --env-file-if-exists=.env dist/app.js",
+    "dev": "tsc -p tsconfig.build.json && node --env-file-if-exists=.env --enable-source-maps dist/app.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:migrate": "prisma migrate deploy",

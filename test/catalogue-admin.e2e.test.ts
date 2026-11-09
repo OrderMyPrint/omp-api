@@ -49,7 +49,7 @@ afterAll(async () => {
 describe("categories", () => {
   it("lists every category with product counts", async () => {
     const res = await sales.agent.get(`${BASE}/categories`).expect(200);
-    expect(res.body).toHaveLength(4);
+    expect(res.body.filter((c: { slug: string }) => !c.slug.startsWith("test-"))).toHaveLength(4);
     expect(res.body[0]).toMatchObject({ slug: "business-stationery", productCount: 3, isVisible: true });
   });
 
@@ -106,7 +106,7 @@ describe("categories", () => {
 describe("products", () => {
   it("lists every product with pricing status and artwork slots", async () => {
     const res = await editor.agent.get(`${BASE}/products`).expect(200);
-    expect(res.body).toHaveLength(7);
+    expect(res.body.filter((p: { slug: string }) => !p.slug.startsWith("test-"))).toHaveLength(7);
     const pads = res.body.find((p: { slug: string }) => p.slug === "letter-pads");
     expect(pads).toMatchObject({ isVisible: true, draftVersionNo: null, category: { slug: "business-stationery" } });
     expect(pads.publishedVersionNo).toBeGreaterThanOrEqual(1);

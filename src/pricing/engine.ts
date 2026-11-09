@@ -38,7 +38,32 @@ export type EngineProduct = {
     required: boolean;
     options: { key: string; label: string; isAvailable: boolean; unavailableReason: string | null }[];
   }[];
+  /** Constraint rules between option groups (AD-CAT-04). */
+  rules?: EngineRule[];
 };
+
+export type EngineRule = {
+  whenGroup: string;
+  whenOption: string;
+  effect: "EXCLUDES" | "REQUIRES";
+  thenGroup: string;
+  thenOptions: string[];
+  message: string;
+};
+
+const chosen = (value: string | string[] | undefined) =>
+  value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+/** Rules whose trigger option is selected and whose condition fails. */
+export function brokenRules(rules: EngineRule[], selections: Record<string, string | string[]>): EngineRule[] {
+  return rules.filter((rule) => {
+    if (!chosen(selections[rule.whenGroup]).includes(rule.whenOption)) return false;
+    const target = chosen(selections[rule.thenGroup]);
+    return rule.effect === "EXCLUDES"
+      ? target.some((key) => rule.thenOptions.includes(key))
+      : !target.some((key) => rule.thenOptions.includes(key));
+  });
+}
 
 export type Configuration = {
   selections: Record<string, string | string[]>;
@@ -125,6 +150,9 @@ function validate(product: EngineProduct, doc: PricingDocument, config: Configur
         });
     }
   }
+
+  for (const rule of brokenRules(product.rules ?? [], config.selections ?? {}))
+    errors.push({ code: "CONSTRAINT_VIOLATION", field: `selections.${rule.thenGroup}`, message: rule.message });
 
   for (const charge of doc.setupCharges) {
     const selected = config.selections?.[charge.group];

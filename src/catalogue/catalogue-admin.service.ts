@@ -9,6 +9,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { priceConfiguration, type Configuration } from "../pricing/engine";
 import { parsePricingDocument, type PricingDocument } from "../pricing/pricing-document";
 import { engineProductFor } from "./catalogue.service";
+import { PricingActivation } from "./pricing-activation";
 
 /** Neon runs in another region: give interactive transactions room. */
 const TX = { timeout: 20_000, maxWait: 10_000 };
@@ -18,6 +19,7 @@ const productDetail = {
   taxProfile: { select: { name: true, gstRate: true } },
   optionGroups: { orderBy: { stepOrder: "asc" }, include: { options: { orderBy: { sort: "asc" } } } },
   artworkSlots: { orderBy: { sort: "asc" } },
+  optionRules: { orderBy: { sort: "asc" } },
 } satisfies Prisma.ProductInclude;
 type ProductDetail = Prisma.ProductGetPayload<{ include: typeof productDetail }>;
 
@@ -34,6 +36,7 @@ export type ProductPatch = {
   turnaroundMinDays?: number;
   turnaroundMaxDays?: number;
   uploadTiming?: "BEFORE_CART" | "AFTER_CHECKOUT" | "EITHER";
+  imageUrl?: string;
   isVisible?: boolean;
 };
 export type OptionPatch = {
@@ -59,17 +62,26 @@ export type DiffRow = {
   change: string | null;
 };
 
-const notFound = (what: string) => new ProblemException(404, "NOT_FOUND", `${what} not found`);
+export const notFound = (what: string) => new ProblemException(404, "NOT_FOUND", `${what} not found`);
 
-function requirePublish(actor: StaffContext, permission: string) {
+export function requirePublish(actor: StaffContext, permission: string, what = "Showing or hiding") {
   if (!actor.permissions.has(permission))
     throw new ProblemException(
       403,
       "FORBIDDEN",
       "You don't have permission to do this",
-      `Showing or hiding needs the "${permission}" permission.`,
+      `${what} needs the "${permission}" permission.`,
     );
 }
+
+/** A new product starts pricing from this template; every price must be entered before publishing. */
+const STARTER_DOCUMENT = {
+  currency: "INR",
+  source: "Prices entered by staff — confirm before publishing",
+  tiers: [{ minQty: 1, unitPrice: "0.00" }],
+  options: {},
+  setupCharges: [],
+};
 
 /** Percent change between two decimal strings, e.g. "+3.3%". */
 function change(before: string | null, after: string | null): string | null {
@@ -98,6 +110,7 @@ export class CatalogueAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly activation: PricingActivation,
   ) {}
 
   // ---------- categories ----------
@@ -216,14 +229,15 @@ export class CatalogueAdminService {
   // ---------- products ----------
 
   async listProducts() {
+    await this.activation.activateDue();
     const rows = await this.prisma.product.findMany({
       orderBy: { sort: "asc" },
       include: {
         category: { select: { id: true, slug: true, name: true } },
         artworkSlots: { orderBy: { sort: "asc" }, select: { label: true } },
         pricingVersions: {
-          where: { status: { in: ["PUBLISHED", "DRAFT"] } },
-          select: { status: true, versionNo: true },
+          where: { status: { in: ["PUBLISHED", "DRAFT", "SCHEDULED"] } },
+          select: { status: true, versionNo: true, effectiveFrom: true },
         },
       },
     });
@@ -235,6 +249,10 @@ export class CatalogueAdminService {
       isVisible: row.isVisible,
       publishedVersionNo: row.pricingVersions.find((v) => v.status === "PUBLISHED")?.versionNo ?? null,
       draftVersionNo: row.pricingVersions.find((v) => v.status === "DRAFT")?.versionNo ?? null,
+      scheduled: (() => {
+        const v = row.pricingVersions.find((x) => x.status === "SCHEDULED");
+        return v ? { versionNo: v.versionNo, effectiveFrom: v.effectiveFrom } : null;
+      })(),
       artworkSlots: row.artworkSlots.map((slot) => slot.label),
     }));
   }
@@ -297,6 +315,15 @@ export class CatalogueAdminService {
         acceptedTypes: slot.acceptedTypes,
         maxMb: slot.maxMb,
       })),
+      rules: row.optionRules.map((rule) => ({
+        id: rule.id,
+        whenGroup: rule.whenGroup,
+        whenOption: rule.whenOption,
+        effect: rule.effect,
+        thenGroup: rule.thenGroup,
+        thenOptions: rule.thenOptions,
+        message: rule.message,
+      })),
     };
   }
 
@@ -313,6 +340,16 @@ export class CatalogueAdminService {
             "NO_PUBLISHED_PRICING",
             "This product has no published pricing",
             "Publish a pricing version before showing it on the site.",
+          );
+        if (!(patch.imageUrl ?? before.imageUrl))
+          throw new ProblemException(409, "NO_IMAGE", "This product has no image", "Choose a product image first.");
+        const slots = await this.prisma.artworkSlot.count({ where: { productId: id } });
+        if (!slots)
+          throw new ProblemException(
+            409,
+            "NO_ARTWORK_SLOT",
+            "This product has no artwork slot",
+            "Add an artwork slot first.",
           );
       }
     }
@@ -372,6 +409,7 @@ export class CatalogueAdminService {
   // ---------- pricing ----------
 
   async listVersions(productId: string) {
+    await this.activation.activateDue();
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
       select: { id: true, slug: true, name: true },
@@ -383,7 +421,10 @@ export class CatalogueAdminService {
     });
     // Who published each version comes from the audit log (the version row has no actor column).
     const events = await this.prisma.auditLog.findMany({
-      where: { action: "pricing.version_published", targetId: { in: versions.map((v) => v.id) } },
+      where: {
+        action: { in: ["pricing.version_published", "pricing.version_scheduled"] },
+        targetId: { in: versions.map((v) => v.id) },
+      },
       select: { targetId: true, actorId: true },
     });
     const actors = await this.prisma.user.findMany({
@@ -426,14 +467,23 @@ export class CatalogueAdminService {
   async createDraft(actor: StaffContext, productId: string, ctx: AuditContext) {
     const product = await this.prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
     if (!product) throw notFound("Product");
-    const existing = await this.prisma.pricingVersion.findFirst({ where: { productId, status: "DRAFT" } });
-    if (existing)
+    const existing = await this.prisma.pricingVersion.findFirst({
+      where: { productId, status: { in: ["DRAFT", "SCHEDULED"] } },
+    });
+    if (existing?.status === "DRAFT")
       throw new ProblemException(409, "DRAFT_EXISTS", "This product already has a draft", undefined, {
         versionId: existing.id,
       });
+    if (existing)
+      throw new ProblemException(
+        409,
+        "VERSION_SCHEDULED",
+        "A version is already scheduled",
+        "Cancel the scheduled version to start a new draft.",
+        { versionId: existing.id },
+      );
+    // A product without published pricing starts from an empty template (prices must be entered).
     const published = await this.prisma.pricingVersion.findFirst({ where: { productId, status: "PUBLISHED" } });
-    if (!published)
-      throw new ProblemException(409, "NO_PUBLISHED_PRICING", "There is no published version to start from");
     const draft = await this.prisma.$transaction(async (tx) => {
       const last = await tx.pricingVersion.aggregate({ where: { productId }, _max: { versionNo: true } });
       const created = await tx.pricingVersion.create({
@@ -441,7 +491,7 @@ export class CatalogueAdminService {
           productId,
           versionNo: (last._max.versionNo ?? 0) + 1,
           status: "DRAFT",
-          document: published.document as Prisma.InputJsonValue,
+          document: (published?.document ?? STARTER_DOCUMENT) as Prisma.InputJsonValue,
           note: null,
         },
       });
@@ -449,7 +499,7 @@ export class CatalogueAdminService {
         { ...ctx, actorId: actor.user.id },
         "pricing.draft_created",
         { type: "pricing_version", id: created.id },
-        { after: { productId, versionNo: created.versionNo, from: published.versionNo } },
+        { after: { productId, versionNo: created.versionNo, from: published?.versionNo ?? null } },
         tx,
       );
       return created;
@@ -566,6 +616,7 @@ export class CatalogueAdminService {
       include: {
         taxProfile: { select: { gstRate: true } },
         optionGroups: { orderBy: { stepOrder: "asc" }, include: { options: { orderBy: { sort: "asc" } } } },
+        optionRules: { orderBy: { sort: "asc" } },
       },
     });
     return {
@@ -575,10 +626,34 @@ export class CatalogueAdminService {
     };
   }
 
-  async publish(actor: StaffContext, versionId: string, ctx: AuditContext) {
+  /**
+   * Publish a draft now, or schedule it: a future `effectiveFrom` makes it SCHEDULED and it
+   * goes live on the first catalogue read after that time (see PricingActivation).
+   */
+  async publish(actor: StaffContext, versionId: string, input: { effectiveFrom?: Date }, ctx: AuditContext) {
     const version = await this.draft(versionId);
     const doc = parsePricingDocument(version.document);
     await this.checkReferences(version.productId, doc);
+    if (doc.tiers.some((tier) => new Decimal(tier.unitPrice).isZero()))
+      throw new ProblemException(422, "PRICING_INVALID", "Every quantity tier needs a price", undefined, {
+        problems: ["A tier still has a unit price of 0.00"],
+      });
+    const at = input.effectiveFrom;
+    if (at && at.getTime() > Date.now() + 60_000) {
+      if (at.getTime() > Date.now() + 366 * 24 * 3600_000)
+        throw new ProblemException(422, "SCHEDULE_TOO_FAR", "Schedule within the next 12 months");
+      await this.prisma.$transaction(async (tx) => {
+        await tx.pricingVersion.update({ where: { id: versionId }, data: { status: "SCHEDULED", effectiveFrom: at } });
+        await this.audit.record(
+          { ...ctx, actorId: actor.user.id },
+          "pricing.version_scheduled",
+          { type: "pricing_version", id: versionId },
+          { after: { productId: version.productId, versionNo: version.versionNo, effectiveFrom: at } },
+          tx,
+        );
+      }, TX);
+      return this.listVersions(version.productId);
+    }
     await this.prisma.$transaction(async (tx) => {
       const now = new Date();
       const current = await tx.pricingVersion.findFirst({
@@ -606,6 +681,29 @@ export class CatalogueAdminService {
       );
     }, TX);
     return this.listVersions(version.productId);
+  }
+
+  /** A scheduled version goes back to being a draft. */
+  async unschedule(actor: StaffContext, versionId: string, ctx: AuditContext) {
+    const version = await this.prisma.pricingVersion.findUnique({ where: { id: versionId } });
+    if (!version) throw notFound("Pricing version");
+    if (version.status !== "SCHEDULED")
+      throw new ProblemException(409, "NOT_SCHEDULED", "This version isn't scheduled");
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.pricingVersion.updateMany({
+        where: { id: versionId, status: "SCHEDULED" },
+        data: { status: "DRAFT", effectiveFrom: new Date() },
+      });
+      if (!claimed.count) throw new ProblemException(409, "NOT_SCHEDULED", "This version has just gone live");
+      await this.audit.record(
+        { ...ctx, actorId: actor.user.id },
+        "pricing.schedule_cancelled",
+        { type: "pricing_version", id: versionId },
+        { before: { effectiveFrom: version.effectiveFrom } },
+        tx,
+      );
+    }, TX);
+    return this.getVersion(versionId);
   }
 }
 

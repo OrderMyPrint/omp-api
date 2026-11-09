@@ -5,6 +5,7 @@ import { ProblemException } from "../common/problem";
 import { decimalString } from "../common/money";
 import { PrismaService } from "../prisma/prisma.service";
 import { tierTable, type EngineProduct } from "../pricing/engine";
+import { PricingActivation } from "./pricing-activation";
 import { parsePricingDocument, type PricingDocument } from "../pricing/pricing-document";
 
 const productInclude = {
@@ -13,6 +14,7 @@ const productInclude = {
   optionGroups: { orderBy: { stepOrder: "asc" }, include: { options: { orderBy: { sort: "asc" } } } },
   artworkSlots: { orderBy: { sort: "asc" } },
   pricingVersions: { where: { status: "PUBLISHED" }, take: 1 },
+  optionRules: { orderBy: { sort: "asc" } },
 } satisfies Prisma.ProductInclude;
 
 type ProductRow = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
@@ -22,7 +24,16 @@ export type LoadedProduct = { row: ProductRow; doc: PricingDocument; pricingVers
 
 type EngineSource = Prisma.ProductGetPayload<{
   include: { taxProfile: { select: { gstRate: true } }; optionGroups: { include: { options: true } } };
-}>;
+}> & {
+  optionRules?: {
+    whenGroup: string;
+    whenOption: string;
+    effect: "EXCLUDES" | "REQUIRES";
+    thenGroup: string;
+    thenOptions: string[];
+    message: string;
+  }[];
+};
 
 /** The engine's view of a product (option groups in step order, options in sort order). */
 export function engineProductFor(row: EngineSource): EngineProduct {
@@ -46,12 +57,23 @@ export function engineProductFor(row: EngineSource): EngineProduct {
         unavailableReason: option.unavailableReason,
       })),
     })),
+    rules: (row.optionRules ?? []).map((rule) => ({
+      whenGroup: rule.whenGroup,
+      whenOption: rule.whenOption,
+      effect: rule.effect,
+      thenGroup: rule.thenGroup,
+      thenOptions: rule.thenOptions,
+      message: rule.message,
+    })),
   };
 }
 
 @Injectable()
 export class CatalogueService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly activation: PricingActivation,
+  ) {}
 
   async categories() {
     const rows = await this.prisma.category.findMany({
@@ -71,6 +93,7 @@ export class CatalogueService {
   }
 
   async products(filter: { category?: string; q?: string }) {
+    await this.activation.activateDue();
     const q = filter.q?.trim();
     const rows = await this.prisma.product.findMany({
       where: {
@@ -140,12 +163,22 @@ export class CatalogueService {
         maxMb: slot.maxMb,
       })),
       tiers: tierTable(doc),
+      /** Constraint rules, so the configurator can hint before the server rejects a combination. */
+      rules: row.optionRules.map((rule) => ({
+        whenGroup: rule.whenGroup,
+        whenOption: rule.whenOption,
+        effect: rule.effect,
+        thenGroup: rule.thenGroup,
+        thenOptions: rule.thenOptions,
+        message: rule.message,
+      })),
       pricingVersionId,
     };
   }
 
   /** Loads a visible product with its published pricing, ready for the engine. */
   async load(slug: string): Promise<LoadedProduct> {
+    await this.activation.activateDue();
     const row = await this.prisma.product.findFirst({ where: { slug, isVisible: true }, include: productInclude });
     const version = row?.pricingVersions[0];
     if (!row || !version)

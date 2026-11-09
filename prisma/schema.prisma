@@ -90,6 +90,7 @@ model Product {
   optionGroups      OptionGroup[]
   artworkSlots      ArtworkSlot[]
   pricingVersions   PricingVersion[]
+  optionRules       OptionRule[]
 
   @@index([categoryId])
   @@map("products")
@@ -159,6 +160,8 @@ model ArtworkSlot {
 
 enum PricingStatus {
   DRAFT
+  /// Publishes itself at effectiveFrom (activated on the next catalogue read).
+  SCHEDULED
   PUBLISHED
   ARCHIVED
 }
@@ -424,4 +427,31 @@ model Redirect {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("redirects")
+}
+
+enum RuleEffect {
+  /// When the trigger option is chosen, none of the target options may be chosen.
+  EXCLUDES
+  /// When the trigger option is chosen, the target group must use one of the target options.
+  REQUIRES
+}
+
+/// Constraint rule between two option groups (AD-CAT-04), enforced by the pricing engine.
+model OptionRule {
+  id          String     @id @default(uuid()) @db.Uuid
+  productId   String     @map("product_id") @db.Uuid
+  product     Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  whenGroup   String     @map("when_group")
+  whenOption  String     @map("when_option")
+  effect      RuleEffect
+  thenGroup   String     @map("then_group")
+  thenOptions String[]   @map("then_options")
+  /// Shown to customers when the rule blocks a combination.
+  message     String
+  sort        Int        @default(0)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  @@index([productId])
+  @@map("option_rules")
 }

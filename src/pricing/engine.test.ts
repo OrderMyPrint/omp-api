@@ -106,6 +106,53 @@ describe("pricing engine", () => {
     ]);
   });
 
+  it("enforces constraint rules (excludes and requires)", () => {
+    const { engine, doc, defaults } = fixture("visiting-cards");
+    const rules: EngineProduct["rules"] = [
+      {
+        whenGroup: "finish",
+        whenOption: "soft-touch",
+        effect: "REQUIRES",
+        thenGroup: "paper",
+        thenOptions: ["premium-matte-350", "kraft-350"],
+        message: "Soft-touch needs a 350 GSM paper.",
+      },
+      {
+        whenGroup: "corners",
+        whenOption: "rounded",
+        effect: "EXCLUDES",
+        thenGroup: "size",
+        thenOptions: ["square"],
+        message: "Rounded corners aren't available on square cards.",
+      },
+    ];
+    const withRules = { ...engine, rules };
+    const config = (selections: Record<string, string>) => ({
+      ...defaults,
+      selections: { ...defaults.selections, ...selections },
+    });
+    const blocked = priceConfiguration(
+      withRules,
+      doc,
+      config({ finish: "soft-touch", paper: "classic-matte-300", corners: "rounded", size: "square" }),
+    );
+    expect(blocked.valid).toBe(false);
+    expect(blocked.errors).toEqual([
+      { code: "CONSTRAINT_VIOLATION", field: "selections.paper", message: "Soft-touch needs a 350 GSM paper." },
+      {
+        code: "CONSTRAINT_VIOLATION",
+        field: "selections.size",
+        message: "Rounded corners aren't available on square cards.",
+      },
+    ]);
+    const allowed = priceConfiguration(
+      withRules,
+      doc,
+      config({ finish: "soft-touch", paper: "kraft-350", corners: "rounded", size: "standard" }),
+    );
+    expect(allowed.valid).toBe(true);
+  });
+
   it("enforces the minimum quantity and whole numbers", () => {
     const { engine, doc, defaults } = fixture("visiting-cards");
     expect(priceConfiguration(engine, doc, { ...defaults, quantity: 50 }).errors[0].code).toBe(

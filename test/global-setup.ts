@@ -23,7 +23,9 @@ export default function setup() {
       "DELETE FROM media_assets;",
       "DELETE FROM redirects;",
       // Catalogue admin fixtures: drafts, test categories and visibility (the seed resets the rest).
-      "DELETE FROM pricing_versions WHERE status = 'DRAFT';",
+      "DELETE FROM pricing_versions WHERE status IN ('DRAFT', 'SCHEDULED');",
+      "DELETE FROM option_rules;",
+      "DELETE FROM products WHERE slug LIKE 'test-%';",
       "DELETE FROM categories WHERE slug LIKE 'test-%';",
       "UPDATE categories SET is_visible = true;",
       "UPDATE products SET is_visible = true;",

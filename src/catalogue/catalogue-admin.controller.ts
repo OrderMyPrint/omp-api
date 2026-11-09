@@ -6,7 +6,8 @@ import type { StaffContext } from "../auth/auth.service";
 import { clientIp, userAgent } from "../auth/session";
 import { RequirePermissions, RequireStepUp, Staff, StaffGuard } from "../auth/staff.guard";
 import { previewSchema } from "../pricing/pricing.controller";
-import { CatalogueAdminService } from "./catalogue-admin.service";
+import { CatalogueAdminService, requirePublish } from "./catalogue-admin.service";
+import { CatalogueStructureService } from "./catalogue-structure.service";
 
 const ctxOf = (req: Request) => ({ ip: clientIp(req), userAgent: userAgent(req) });
 const uuid = z.string().uuid();
@@ -51,6 +52,10 @@ const productPatch = z
     turnaroundMinDays: z.number().int().min(1).max(60),
     turnaroundMaxDays: z.number().int().min(1).max(60),
     uploadTiming: z.enum(["BEFORE_CART", "AFTER_CHECKOUT", "EITHER"]),
+    imageUrl: z
+      .string()
+      .regex(/^(\/[A-Za-z0-9._\-/]+|https:\/\/[^\s]+)$/, "Use a site image path like /images/x.png or an https URL")
+      .max(500),
     isVisible: z.boolean(),
   })
   .partial()
@@ -80,13 +85,87 @@ const slotPatch = z
   .strict();
 const draftBody = z.object({ document: z.unknown(), note: longText(300).nullable().optional() }).strict();
 const testBody = previewSchema.omit({ productSlug: true });
+const slugSchema = z
+  .string()
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "Slugs are lower-case words joined by dashes")
+  .max(60);
+const key = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, "Keys are lower-case letters, digits and dashes");
+const newProduct = z
+  .object({
+    slug: slugSchema,
+    name: text(80),
+    categoryId: uuid,
+    summary: text(200),
+    unitOne: text(30),
+    unitMany: text(30),
+    quantityMode: z.enum(["TIERS", "SIZES"]),
+    sizes: z
+      .array(z.string().regex(/^[A-Z0-9]{1,5}$/, "Sizes like S, M, XL, 2XL"))
+      .max(12)
+      .optional(),
+    taxProfileId: uuid,
+    turnaroundMinDays: z.number().int().min(1).max(60),
+    turnaroundMaxDays: z.number().int().min(1).max(60),
+  })
+  .strict();
+const newGroup = z
+  .object({
+    key,
+    label: text(80),
+    shortLabel: longText(40).nullable().optional(),
+    hint: longText(200),
+    kind: z.enum(["SELECT", "SWATCH", "MULTISELECT"]),
+    required: z.boolean(),
+  })
+  .strict();
+const groupPatch = z
+  .object({
+    label: text(80),
+    shortLabel: longText(40).nullable(),
+    hint: longText(200),
+    note: longText(300).nullable(),
+    required: z.boolean(),
+    defaultKeys: z.array(key).max(30),
+  })
+  .partial()
+  .strict();
+const newOption = z
+  .object({
+    key,
+    label: text(80),
+    detail: longText(200).nullable().optional(),
+    swatch: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/, "Use a colour like #1a2b3c")
+      .nullable()
+      .optional(),
+  })
+  .strict();
+const ruleBody = z
+  .object({
+    whenGroup: key,
+    whenOption: key,
+    effect: z.enum(["EXCLUDES", "REQUIRES"]),
+    thenGroup: key,
+    thenOptions: z.array(key).min(1).max(30),
+    message: text(200),
+  })
+  .strict();
+const newSlot = z
+  .object({ label: text(60), printArea: text(120), bleedMm: decimal1.optional(), safeMm: decimal1.optional() })
+  .strict();
+const ids = z.object({ ids: z.array(uuid).min(1).max(200) }).strict();
+const publishBody = z.object({ effectiveFrom: z.coerce.date().optional() }).strict();
 
 /** AD-CAT-01…03 and AD-PRC-01…03 · Catalogue and pricing administration. */
 @ApiTags("admin · catalogue & pricing")
 @Controller("admin/catalogue")
 @UseGuards(StaffGuard)
 export class CatalogueAdminController {
-  constructor(private readonly catalogue: CatalogueAdminService) {}
+  constructor(
+    private readonly catalogue: CatalogueAdminService,
+    private readonly structure: CatalogueStructureService,
+  ) {}
 
   // Categories
   @Get("categories")
@@ -218,7 +297,122 @@ export class CatalogueAdminController {
   @RequirePermissions("pricing.publish")
   @RequireStepUp()
   @ApiOperation({ summary: "Publish a draft now; the previous version is archived" })
-  publish(@Param("versionId") id: string, @Staff() s: StaffContext, @Req() req: Request) {
-    return this.catalogue.publish(s, uuid.parse(id), ctxOf(req));
+  publish(@Param("versionId") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.catalogue.publish(s, uuid.parse(id), publishBody.parse(body ?? {}), ctxOf(req));
+  }
+
+  @Post("pricing/:versionId/unschedule")
+  @HttpCode(200)
+  @RequirePermissions("pricing.publish")
+  @ApiOperation({ summary: "Cancel a scheduled version (it becomes a draft again)" })
+  unschedule(@Param("versionId") id: string, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.catalogue.unschedule(s, uuid.parse(id), ctxOf(req));
+  }
+
+  // New products, slugs, option groups, rules and artwork slots (AD-CAT-03/04/05)
+  @Get("tax-profiles")
+  @RequirePermissions("catalogue.read")
+  taxProfiles() {
+    return this.structure.taxProfiles();
+  }
+
+  @Post("products")
+  @RequirePermissions("catalogue.write")
+  @ApiOperation({ summary: "Create a product (hidden until it has an image, an artwork slot and published pricing)" })
+  createProduct(@Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.createProduct(s, newProduct.parse(body), ctxOf(req));
+  }
+
+  @Put("products/:id/slug")
+  @RequirePermissions("catalogue.write")
+  @ApiOperation({ summary: "Change a product's URL; adds a redirect and updates website content" })
+  productSlug(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    requirePublish(s, "catalogue.publish", "Changing a live address");
+    const { slug } = z.object({ slug: slugSchema }).strict().parse(body);
+    return this.structure.changeProductSlug(s, uuid.parse(id), slug, ctxOf(req));
+  }
+
+  @Put("categories/:id/slug")
+  @RequirePermissions("catalogue.write")
+  @ApiOperation({ summary: "Change a category's URL; adds a redirect and updates website content" })
+  categorySlug(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    requirePublish(s, "catalogue.publish", "Changing a live address");
+    const { slug } = z.object({ slug: slugSchema }).strict().parse(body);
+    return this.structure.changeCategorySlug(s, uuid.parse(id), slug, ctxOf(req));
+  }
+
+  @Post("products/:id/option-groups")
+  @RequirePermissions("catalogue.write")
+  addGroup(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.addGroup(s, uuid.parse(id), newGroup.parse(body), ctxOf(req));
+  }
+
+  @Put("products/:id/option-groups/order")
+  @RequirePermissions("catalogue.write")
+  reorderGroups(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.reorderGroups(s, uuid.parse(id), ids.parse(body).ids, ctxOf(req));
+  }
+
+  @Patch("option-groups/:id")
+  @RequirePermissions("catalogue.write")
+  updateGroup(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.updateGroup(s, uuid.parse(id), groupPatch.parse(body), ctxOf(req));
+  }
+
+  @Delete("option-groups/:id")
+  @RequirePermissions("catalogue.write")
+  @ApiOperation({ summary: "Delete an option group no pricing version or rule uses" })
+  deleteGroup(@Param("id") id: string, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.deleteGroup(s, uuid.parse(id), ctxOf(req));
+  }
+
+  @Post("option-groups/:id/options")
+  @RequirePermissions("catalogue.write")
+  addOption(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.addOption(s, uuid.parse(id), newOption.parse(body), ctxOf(req));
+  }
+
+  @Put("option-groups/:id/options/order")
+  @RequirePermissions("catalogue.write")
+  reorderOptions(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.reorderOptions(s, uuid.parse(id), ids.parse(body).ids, ctxOf(req));
+  }
+
+  @Delete("options/:id")
+  @RequirePermissions("catalogue.write")
+  @ApiOperation({ summary: "Delete an option no pricing version or rule uses" })
+  deleteOption(@Param("id") id: string, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.deleteOption(s, uuid.parse(id), ctxOf(req));
+  }
+
+  @Post("products/:id/rules")
+  @RequirePermissions("catalogue.write")
+  @ApiOperation({ summary: "Add a constraint rule (enforced by the pricing engine)" })
+  addRule(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.addRule(s, uuid.parse(id), ruleBody.parse(body), ctxOf(req));
+  }
+
+  @Put("rules/:id")
+  @RequirePermissions("catalogue.write")
+  updateRule(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.updateRule(s, uuid.parse(id), ruleBody.parse(body), ctxOf(req));
+  }
+
+  @Delete("rules/:id")
+  @RequirePermissions("catalogue.write")
+  deleteRule(@Param("id") id: string, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.deleteRule(s, uuid.parse(id), ctxOf(req));
+  }
+
+  @Post("products/:id/artwork-slots")
+  @RequirePermissions("catalogue.write")
+  addSlot(@Param("id") id: string, @Body() body: unknown, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.addSlot(s, uuid.parse(id), newSlot.parse(body), ctxOf(req));
+  }
+
+  @Delete("artwork-slots/:id")
+  @RequirePermissions("catalogue.write")
+  deleteSlot(@Param("id") id: string, @Staff() s: StaffContext, @Req() req: Request) {
+    return this.structure.deleteSlot(s, uuid.parse(id), ctxOf(req));
   }
 }

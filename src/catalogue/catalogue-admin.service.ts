@@ -276,6 +276,7 @@ export class CatalogueAdminService {
         shortLabel: group.shortLabel,
         kind: group.kind,
         required: group.required,
+        defaultKeys: group.defaultKeys,
         options: group.options.map((option) => ({
           id: option.id,
           key: option.key,

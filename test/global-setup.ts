@@ -22,6 +22,11 @@ export default function setup() {
       "DELETE FROM faq_topics;",
       "DELETE FROM media_assets;",
       "DELETE FROM redirects;",
+      // Catalogue admin fixtures: drafts, test categories and visibility (the seed resets the rest).
+      "DELETE FROM pricing_versions WHERE status = 'DRAFT';",
+      "DELETE FROM categories WHERE slug LIKE 'test-%';",
+      "UPDATE categories SET is_visible = true;",
+      "UPDATE products SET is_visible = true;",
       "DELETE FROM users WHERE kind = 'STAFF';",
       "DELETE FROM staff_roles WHERE is_system = false AND key NOT IN ('admin','content-editor','sales','pre-press','production','finance');",
     ].join(" "),

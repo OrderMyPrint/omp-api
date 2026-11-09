@@ -20,6 +20,35 @@ type ProductRow = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
 /** A published product with its validated pricing document. */
 export type LoadedProduct = { row: ProductRow; doc: PricingDocument; pricingVersionId: string; engine: EngineProduct };
 
+type EngineSource = Prisma.ProductGetPayload<{
+  include: { taxProfile: { select: { gstRate: true } }; optionGroups: { include: { options: true } } };
+}>;
+
+/** The engine's view of a product (option groups in step order, options in sort order). */
+export function engineProductFor(row: EngineSource): EngineProduct {
+  return {
+    slug: row.slug,
+    unitOne: row.unitOne,
+    unitMany: row.unitMany,
+    quantityMode: row.quantityMode,
+    sizes: row.sizes,
+    gstRate: row.taxProfile.gstRate.toFixed(2),
+    groups: row.optionGroups.map((group) => ({
+      key: group.key,
+      label: group.label,
+      shortLabel: group.shortLabel,
+      kind: group.kind,
+      required: group.required,
+      options: group.options.map((option) => ({
+        key: option.key,
+        label: option.label,
+        isAvailable: option.isAvailable,
+        unavailableReason: option.unavailableReason,
+      })),
+    })),
+  };
+}
+
 @Injectable()
 export class CatalogueService {
   constructor(private readonly prisma: PrismaService) {}
@@ -126,27 +155,7 @@ export class CatalogueService {
       row,
       doc,
       pricingVersionId: version.id,
-      engine: {
-        slug: row.slug,
-        unitOne: row.unitOne,
-        unitMany: row.unitMany,
-        quantityMode: row.quantityMode,
-        sizes: row.sizes,
-        gstRate: row.taxProfile.gstRate.toFixed(2),
-        groups: row.optionGroups.map((group) => ({
-          key: group.key,
-          label: group.label,
-          shortLabel: group.shortLabel,
-          kind: group.kind,
-          required: group.required,
-          options: group.options.map((option) => ({
-            key: option.key,
-            label: option.label,
-            isAvailable: option.isAvailable,
-            unavailableReason: option.unavailableReason,
-          })),
-        })),
-      },
+      engine: engineProductFor(row),
     };
   }
 

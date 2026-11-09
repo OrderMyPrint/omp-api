@@ -91,6 +91,8 @@ model Product {
   artworkSlots      ArtworkSlot[]
   pricingVersions   PricingVersion[]
   optionRules       OptionRule[]
+  cartItems         CartItem[]
+  orderItems        OrderItem[]
 
   @@index([categoryId])
   @@map("products")
@@ -204,28 +206,31 @@ enum StaffStatus {
 }
 
 model User {
-  id            String            @id @default(uuid()) @db.Uuid
-  kind          UserKind
+  id               String            @id @default(uuid()) @db.Uuid
+  kind             UserKind
   /// Stored lower-case. Required for staff (check constraint).
-  email         String?           @unique
-  phoneE164     String?           @unique @map("phone_e164")
-  name          String
-  passwordHash  String?           @map("password_hash")
+  email            String?           @unique
+  phoneE164        String?           @unique @map("phone_e164")
+  name             String
+  passwordHash     String?           @map("password_hash")
   /// AES-256-GCM encrypted base32 secret (STAFF_SECRET_KEY). Set but not enabled during enrolment.
-  totpSecretEnc String?           @map("totp_secret_enc")
-  totpEnabledAt DateTime?         @map("totp_enabled_at")
+  totpSecretEnc    String?           @map("totp_secret_enc")
+  totpEnabledAt    DateTime?         @map("totp_enabled_at")
   /// Last accepted TOTP time-step; a code is never accepted twice (replay protection).
-  totpLastStep  Int?              @map("totp_last_step")
-  staffStatus   StaffStatus?      @map("staff_status")
-  roleId        String?           @map("role_id") @db.Uuid
-  role          Role?             @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  failedLogins  Int               @default(0) @map("failed_logins")
-  lockedUntil   DateTime?         @map("locked_until")
-  lastActiveAt  DateTime?         @map("last_active_at")
-  createdAt     DateTime          @default(now()) @map("created_at")
-  updatedAt     DateTime          @updatedAt @map("updated_at")
-  sessions      StaffSession[]
-  invitations   StaffInvitation[] @relation("InvitedUser")
+  totpLastStep     Int?              @map("totp_last_step")
+  staffStatus      StaffStatus?      @map("staff_status")
+  roleId           String?           @map("role_id") @db.Uuid
+  role             Role?             @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  failedLogins     Int               @default(0) @map("failed_logins")
+  lockedUntil      DateTime?         @map("locked_until")
+  lastActiveAt     DateTime?         @map("last_active_at")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  sessions         StaffSession[]
+  customerSessions CustomerSession[]
+  cart             Cart?
+  orders           Order[]
+  invitations      StaffInvitation[] @relation("InvitedUser")
 
   @@index([roleId])
   @@map("users")
@@ -454,4 +459,248 @@ model OptionRule {
 
   @@index([productId])
   @@map("option_rules")
+}
+
+// ------------------------------------------------------------------ customers
+
+/// One-time code sent by SMS for customer sign-in (X-09). Only a hash of the code is stored.
+model OtpChallenge {
+  id          String    @id @default(uuid()) @db.Uuid
+  phoneE164   String    @map("phone_e164")
+  codeHash    String    @map("code_hash")
+  attempts    Int       @default(0)
+  expiresAt   DateTime  @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at")
+  /// Set after too many wrong codes; new codes are refused until then.
+  lockedUntil DateTime? @map("locked_until")
+  ip          String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([phoneE164, createdAt])
+  @@map("otp_challenges")
+}
+
+model CustomerSession {
+  id         String    @id @default(uuid()) @db.Uuid
+  /// SHA-256 of the cookie token; the token itself is never stored.
+  tokenHash  String    @unique @map("token_hash")
+  userId     String    @map("user_id") @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  csrfToken  String    @map("csrf_token")
+  ip         String?
+  userAgent  String?   @map("user_agent")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at")
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  @@index([userId])
+  @@map("customer_sessions")
+}
+
+// ------------------------------------------------------------------ cart
+
+/// A guest cart is found by its cookie token; a signed-in cart by its user. Guest carts merge on sign-in.
+model Cart {
+  id        String     @id @default(uuid()) @db.Uuid
+  tokenHash String?    @unique @map("token_hash")
+  userId    String?    @unique @map("user_id") @db.Uuid
+  user      User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  items     CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  cartId           String   @map("cart_id") @db.Uuid
+  cart             Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId        String   @map("product_id") @db.Uuid
+  product          Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// Selections, quantity or sizes, colours — the configurator input.
+  configuration    Json
+  /// Price when added (catalogue doc §4.4: re-priced at checkout, changes shown to the customer).
+  priceSnapshot    Json     @map("price_snapshot")
+  pricingVersionId String   @map("pricing_version_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([cartId])
+  @@map("cart_items")
+}
+
+// ------------------------------------------------------------------ orders
+
+enum OrderStatus {
+  AWAITING_PAYMENT
+  PAID
+  IN_PRODUCTION
+  READY_TO_DISPATCH
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+}
+
+enum OrderItemStatus {
+  ACTIVE
+  CANCELLED
+}
+
+enum PaymentStatus {
+  CREATED
+  CAPTURED
+  FAILED
+}
+
+enum RefundStatus {
+  REQUESTED
+  PROCESSED
+}
+
+/// Yearly order-number counter (OMP-2026-000001).
+model OrderSequence {
+  year Int @id
+  last Int @default(0)
+
+  @@map("order_sequences")
+}
+
+model Order {
+  id                 String       @id @default(uuid()) @db.Uuid
+  orderNumber        String       @unique @map("order_number")
+  userId             String       @map("user_id") @db.Uuid
+  user               User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status             OrderStatus  @default(AWAITING_PAYMENT)
+  /// Client-supplied key so a retried "Place order" never creates a second order.
+  idempotencyKey     String       @map("idempotency_key")
+  /// {name, phone, email}
+  contact            Json
+  billingAddress     Json         @map("billing_address")
+  shippingAddress    Json         @map("shipping_address")
+  gstin              String?
+  companyName        String?      @map("company_name")
+  placeOfSupplyState String       @map("place_of_supply_state")
+  subtotal           Decimal      @db.Decimal(12, 2)
+  discountTotal      Decimal      @default(0) @map("discount_total") @db.Decimal(12, 2)
+  shippingTotal      Decimal      @default(0) @map("shipping_total") @db.Decimal(12, 2)
+  taxTotal           Decimal      @map("tax_total") @db.Decimal(12, 2)
+  grandTotal         Decimal      @map("grand_total") @db.Decimal(12, 2)
+  currency           String       @default("INR")
+  onHold             Boolean      @default(false) @map("on_hold")
+  holdReason         String?      @map("hold_reason")
+  holdReviewOn       DateTime?    @map("hold_review_on")
+  cancelReason       String?      @map("cancel_reason")
+  cancelledAt        DateTime?    @map("cancelled_at")
+  placedAt           DateTime     @default(now()) @map("placed_at")
+  paidAt             DateTime?    @map("paid_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+  items              OrderItem[]
+  events             OrderEvent[]
+  payments           Payment[]
+  refunds            Refund[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([status, placedAt])
+  @@index([placedAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id               String          @id @default(uuid()) @db.Uuid
+  orderId          String          @map("order_id") @db.Uuid
+  order            Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId        String          @map("product_id") @db.Uuid
+  product          Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productName      String          @map("product_name")
+  /// What was ordered (labels and keys) — immutable (trigger).
+  specSnapshot     Json            @map("spec_snapshot")
+  /// Every price line and total as charged — immutable (trigger).
+  priceSnapshot    Json            @map("price_snapshot")
+  pricingVersionId String          @map("pricing_version_id") @db.Uuid
+  quantity         Int
+  unitPrice        Decimal         @map("unit_price") @db.Decimal(12, 4)
+  lineSubtotal     Decimal         @map("line_subtotal") @db.Decimal(12, 2)
+  gstRate          Decimal         @map("gst_rate") @db.Decimal(5, 2)
+  taxAmount        Decimal         @map("tax_amount") @db.Decimal(12, 2)
+  lineTotal        Decimal         @map("line_total") @db.Decimal(12, 2)
+  status           OrderItemStatus @default(ACTIVE)
+  cancelledAt      DateTime?       @map("cancelled_at")
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+/// Order timeline: status changes, holds, payments and notes, by customer, staff or system.
+model OrderEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @map("order_id") @db.Uuid
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  kind      String
+  message   String
+  detail    Json?
+  actorKind String   @map("actor_kind")
+  actorId   String?  @map("actor_id") @db.Uuid
+  at        DateTime @default(now())
+
+  @@index([orderId, at])
+  @@map("order_events")
+}
+
+model Payment {
+  id          String        @id @default(uuid()) @db.Uuid
+  orderId     String        @map("order_id") @db.Uuid
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  provider    String
+  providerRef String        @map("provider_ref")
+  amount      Decimal       @db.Decimal(12, 2)
+  status      PaymentStatus @default(CREATED)
+  method      String?
+  createdAt   DateTime      @default(now()) @map("created_at")
+  capturedAt  DateTime?     @map("captured_at")
+  failedAt    DateTime?     @map("failed_at")
+  refunds     Refund[]
+
+  @@unique([provider, providerRef])
+  @@index([orderId])
+  @@map("payments")
+}
+
+/// Every webhook the gateway sends, verified or not. The unique event id makes processing idempotent.
+model PaymentEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  provider    String
+  eventId     String   @map("event_id")
+  kind        String
+  providerRef String?  @map("provider_ref")
+  orderId     String?  @map("order_id") @db.Uuid
+  amount      Decimal? @db.Decimal(12, 2)
+  verified    Boolean
+  /// applied · duplicate · ignored · rejected
+  outcome     String
+  payload     Json
+  receivedAt  DateTime @default(now()) @map("received_at")
+
+  @@unique([provider, eventId])
+  @@index([orderId])
+  @@map("payment_events")
+}
+
+/// Money owed back after a cancellation; completed in Payments & refunds (AD-PAY-02, Phase 6).
+model Refund {
+  id            String       @id @default(uuid()) @db.Uuid
+  orderId       String       @map("order_id") @db.Uuid
+  order         Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  paymentId     String?      @map("payment_id") @db.Uuid
+  payment       Payment?     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  amount        Decimal      @db.Decimal(12, 2)
+  reason        String
+  status        RefundStatus @default(REQUESTED)
+  requestedById String?      @map("requested_by_id") @db.Uuid
+  createdAt     DateTime     @default(now()) @map("created_at")
+  processedAt   DateTime?    @map("processed_at")
+
+  @@index([orderId])
+  @@map("refunds")
 }

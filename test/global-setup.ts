@@ -23,6 +23,18 @@ export default function setup() {
       "DELETE FROM media_assets;",
       "DELETE FROM redirects;",
       // Catalogue admin fixtures: drafts, test categories and visibility (the seed resets the rest).
+      // Commerce fixtures: customers, carts and orders from earlier runs.
+      "DELETE FROM payment_events;",
+      "DELETE FROM refunds;",
+      "DELETE FROM payments;",
+      "DELETE FROM order_events;",
+      "DELETE FROM order_items;",
+      "DELETE FROM orders;",
+      "DELETE FROM cart_items;",
+      "DELETE FROM carts;",
+      "DELETE FROM customer_sessions;",
+      "DELETE FROM otp_challenges;",
+      "DELETE FROM users WHERE kind = 'CUSTOMER';",
       "DELETE FROM pricing_versions WHERE status IN ('DRAFT', 'SCHEDULED');",
       "DELETE FROM option_rules;",
       "DELETE FROM products WHERE slug LIKE 'test-%';",

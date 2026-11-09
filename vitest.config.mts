@@ -14,6 +14,10 @@ const testEnv = {
   THROTTLE_DISABLED: "true",
   // Test-only key (not a secret): 32 zero bytes.
   STAFF_SECRET_KEY: Buffer.alloc(32).toString("base64"),
+  // Development stand-ins for the SMS provider (D-25) and payment gateway (D-06).
+  SMS_PROVIDER: "console",
+  PAYMENT_PROVIDER: "test",
+  TEST_PAYMENT_SECRET: "test-only-not-a-secret",
 };
 Object.assign(process.env, testEnv); // for test/global-setup.ts (runs in this process)
 

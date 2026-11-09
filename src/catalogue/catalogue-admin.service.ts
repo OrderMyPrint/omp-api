@@ -292,6 +292,8 @@ export class CatalogueAdminService {
         key: group.key,
         label: group.label,
         shortLabel: group.shortLabel,
+        hint: group.hint,
+        note: group.note,
         kind: group.kind,
         required: group.required,
         defaultKeys: group.defaultKeys,

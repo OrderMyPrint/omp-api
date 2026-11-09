@@ -461,6 +461,7 @@ export class CatalogueAdminService {
       status: version.status,
       note: version.note,
       document: version.document,
+      effectiveFrom: version.effectiveFrom,
       publishedAt: version.publishedAt,
       product: await this.getProduct(version.productId),
     };

@@ -105,6 +105,14 @@ export class ContentService {
 
   /** Lists references that don't exist (or images without alt text). Publishing is blocked until fixed. */
   private async checkRefs(doc: unknown) {
+    const problems = await this.findProblems(doc);
+    if (problems.length)
+      throw new ProblemException(422, "REFERENCE_INVALID", "Fix these before publishing", problems.join("; "), {
+        problems,
+      });
+  }
+
+  private async findProblems(doc: unknown) {
     const refs = collectRefs(doc);
     const l = await this.lookup(refs, false);
     const problems: string[] = [];
@@ -120,10 +128,7 @@ export class ContentService {
     for (const t of refs.faqTopics) if (!l.faqTopics.has(t)) problems.push(`FAQ topic "${t}" doesn't exist`);
     for (const i of refs.faqItems)
       if (!l.faqItems.some((f) => f.id === i)) problems.push(`FAQ question ${i} doesn't exist or is unpublished`);
-    if (problems.length)
-      throw new ProblemException(422, "REFERENCE_INVALID", "Fix these before publishing", problems.join("; "), {
-        problems,
-      });
+    return problems;
   }
 
   // ------------------------------------------------------------- resolving
@@ -411,13 +416,24 @@ export class ContentService {
         });
       }
       await tx.contentPage.update({ where: { id }, data: { title: doc.title } });
-      await this.audit.record(
-        { ...ctx, actorId: actor.user.id },
-        "content.draft_saved",
-        { type: "page", id },
-        undefined,
-        tx,
-      );
+      // The visual editor autosaves every few seconds: audit one draft save per editor and page every 10 minutes.
+      const recent = await tx.auditLog.findFirst({
+        where: {
+          action: "content.draft_saved",
+          targetId: id,
+          actorId: actor.user.id,
+          at: { gt: new Date(Date.now() - 10 * 60_000) },
+        },
+        select: { id: true },
+      });
+      if (!recent)
+        await this.audit.record(
+          { ...ctx, actorId: actor.user.id },
+          "content.draft_saved",
+          { type: "page", id },
+          undefined,
+          tx,
+        );
     });
     return this.getPage(id);
   }
@@ -450,6 +466,64 @@ export class ContentService {
     const version = await this.prisma.contentPageVersion.findFirst({ where: { id: versionId, pageId: id } });
     if (!version) throw new ProblemException(404, "VERSION_NOT_FOUND", "Version not found");
     return this.saveDraft(actor, id, version.document, ctx);
+  }
+
+  /**
+   * Visual editor canvas (AD-WEB-07…10): resolves an unsaved document exactly as the storefront
+   * would show it, without saving. Hidden sections are left out, like on the live site.
+   */
+  async renderDocument(id: string, document: unknown) {
+    const page = await this.prisma.contentPage.findUnique({ where: { id } });
+    if (!page) throw new ProblemException(404, "PAGE_NOT_FOUND", "Page not found");
+    return {
+      key: page.key,
+      path: page.path,
+      type: page.type,
+      ...(await this.resolvePage(pageDocumentSchema.parse(document), false)),
+    };
+  }
+
+  /** Publish review (AD-WEB-11): what the draft changes compared with the live version, and what blocks publishing. */
+  async review(id: string) {
+    const versions = await this.prisma.contentPageVersion.findMany({
+      where: { pageId: id, status: { in: ["DRAFT", "PUBLISHED"] } },
+    });
+    const draftRow = versions.find((v) => v.status === "DRAFT");
+    if (!draftRow) throw new ProblemException(409, "NOTHING_TO_PUBLISH", "There are no unpublished changes");
+    const draft = pageDocumentSchema.parse(draftRow.document);
+    const liveRow = versions.find((v) => v.status === "PUBLISHED");
+    const live = liveRow ? pageDocumentSchema.parse(liveRow.document) : null;
+    const label = (b: Block) =>
+      ("heading" in b && typeof b.heading === "string" && b.heading) ||
+      ("title" in b && typeof b.title === "string" && b.title) ||
+      b.type;
+    const strip = (b: Block) => {
+      const { visible: _v, style: _s, devices: _d, ...rest } = b;
+      return JSON.stringify(rest);
+    };
+    const changes: { kind: string; blockId: string; type: string; label: string; detail?: string }[] = [];
+    const before = new Map((live?.blocks ?? []).map((b, i) => [b.id, { b, i }]));
+    const after = new Set(draft.blocks.map((b) => b.id));
+    const liveOrder = (live?.blocks ?? []).filter((b) => after.has(b.id)).map((b) => b.id);
+    const draftOrder = draft.blocks.filter((b) => before.has(b.id)).map((b) => b.id);
+    draft.blocks.forEach((b) => {
+      const old = before.get(b.id)?.b;
+      const base = { blockId: b.id, type: b.type, label: label(b) };
+      if (!old) return changes.push({ kind: "added", ...base });
+      if (old.visible !== false && b.visible === false) changes.push({ kind: "hidden", ...base });
+      else if (old.visible === false && b.visible !== false) changes.push({ kind: "shown", ...base });
+      if (strip(old) !== strip(b)) changes.push({ kind: "edited", ...base });
+      if (JSON.stringify(old.style ?? {}) !== JSON.stringify(b.style ?? {})) changes.push({ kind: "style", ...base });
+      if (JSON.stringify(old.devices ?? {}) !== JSON.stringify(b.devices ?? {}))
+        changes.push({ kind: "devices", ...base });
+    });
+    for (const { b } of before.values())
+      if (!after.has(b.id)) changes.push({ kind: "removed", blockId: b.id, type: b.type, label: label(b) });
+    if (liveOrder.join() !== draftOrder.join())
+      changes.push({ kind: "reordered", blockId: "", type: "page", label: "Section order" });
+    if (live && (live.title !== draft.title || JSON.stringify(live.seo) !== JSON.stringify(draft.seo)))
+      changes.push({ kind: "edited", blockId: "", type: "page", label: "Page title & SEO" });
+    return { firstPublish: !live, changes, problems: await this.findProblems(draft) };
   }
 
   async previewDraft(id: string) {

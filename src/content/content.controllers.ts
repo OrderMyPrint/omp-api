@@ -115,6 +115,24 @@ export class AdminContentController {
     return this.content.previewDraft(uuid.parse(id));
   }
 
+  @Post("pages/:id/render")
+  @HttpCode(200)
+  @RequirePermissions("content.read")
+  @ApiOperation({ summary: "Visual editor: resolve an unsaved page document for the canvas (nothing is saved)" })
+  render(@Param("id") id: string, @Body() body: unknown) {
+    return this.content.renderDocument(
+      uuid.parse(id),
+      z.object({ document: z.unknown() }).strict().parse(body).document,
+    );
+  }
+
+  @Get("pages/:id/review")
+  @RequirePermissions("content.read")
+  @ApiOperation({ summary: "Publish review: what the draft changes and what blocks publishing" })
+  review(@Param("id") id: string) {
+    return this.content.review(uuid.parse(id));
+  }
+
   @Post("pages/:id/publish")
   @HttpCode(200)
   @RequirePermissions("content.publish")

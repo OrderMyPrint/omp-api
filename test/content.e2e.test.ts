@@ -323,3 +323,62 @@ describe("media, settings and redirects", () => {
     );
   });
 });
+
+describe("visual editor (AD-WEB-07…11)", () => {
+  it("renders an unsaved document with style presets and device visibility, without saving", async () => {
+    const page = (await editor.agent.get(`/api/v1/admin/content/pages/${homeId}`).expect(200)).body;
+    const doc = structuredClone(page.document);
+    doc.blocks[0].heading = "Unsaved canvas heading";
+    doc.blocks[0].style = { background: "brandTint", spacing: "spacious", align: "center" };
+    doc.blocks[1].devices = { desktop: true, tablet: false, mobile: false };
+    const res = await post(editor, `/api/v1/admin/content/pages/${homeId}/render`, { document: doc }).expect(200);
+    expect(res.body.blocks[0]).toMatchObject({
+      heading: "Unsaved canvas heading",
+      style: { background: "brandTint", spacing: "spacious", align: "center" },
+      primary: { href: "/products" },
+    });
+    expect(res.body.blocks[1].devices).toEqual({ desktop: true, tablet: false, mobile: false });
+    const after = (await editor.agent.get(`/api/v1/admin/content/pages/${homeId}`).expect(200)).body;
+    expect(after.document.blocks[0].heading).not.toBe("Unsaved canvas heading");
+  });
+
+  it("only accepts brand style presets", async () => {
+    const page = (await editor.agent.get(`/api/v1/admin/content/pages/${homeId}`).expect(200)).body;
+    const doc = structuredClone(page.document);
+    doc.blocks[0].style = { background: "#ff0000" };
+    await post(editor, `/api/v1/admin/content/pages/${homeId}/render`, { document: doc }).expect(400);
+    doc.blocks[0].style = { css: "color:red" };
+    await put(editor, `/api/v1/admin/content/pages/${homeId}/draft`, { document: doc }).expect(400);
+  });
+
+  it("reviews what a draft changes and audits autosaves sparingly", async () => {
+    const page = (await editor.agent.get(`/api/v1/admin/content/pages/${homeId}`).expect(200)).body;
+    const doc = structuredClone(page.document);
+    doc.blocks[0].heading = `Reviewed heading ${Date.now()}`;
+    doc.blocks[0].style = { spacing: "compact" };
+    const hidden = doc.blocks.find((b: { visible?: boolean }) => b.visible !== false && doc.blocks.indexOf(b) > 0);
+    hidden.visible = false;
+    doc.blocks.push({
+      id: `notice-${Date.now()}`,
+      type: "notice",
+      tone: "info",
+      title: "Visual editor test",
+      body: "Hi",
+    });
+    for (let i = 0; i < 3; i++)
+      await put(editor, `/api/v1/admin/content/pages/${homeId}/draft`, { document: doc }).expect(200);
+    const review = (await editor.agent.get(`/api/v1/admin/content/pages/${homeId}/review`).expect(200)).body;
+    const kinds = review.changes.map((c: { kind: string }) => c.kind);
+    expect(kinds).toEqual(expect.arrayContaining(["edited", "style", "hidden", "added"]));
+    expect(review.problems).toEqual([]);
+    const saves = await prisma.auditLog.count({
+      where: {
+        action: "content.draft_saved",
+        targetId: homeId,
+        actorId: editor.userId,
+        at: { gt: new Date(Date.now() - 60_000) },
+      },
+    });
+    expect(saves).toBeLessThanOrEqual(1);
+  });
+});

@@ -38,7 +38,32 @@ export const linkSchema = z.discriminatedUnion("kind", [
 export type Link = z.infer<typeof linkSchema>;
 
 const cta = z.object({ label: text(40).min(1), link: linkSchema }).strict();
-const blockBase = { id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), visible: z.boolean().default(true) };
+/**
+ * Visual editor style presets (AD-WEB-09, D-30). Each value maps to brand design tokens in the
+ * storefront — there is no free-form colour, size or CSS. Omitted values use the section's own design.
+ */
+export const sectionStyleSchema = z
+  .object({
+    background: z.enum(["white", "paper", "brandTint", "navy"]).optional(),
+    spacing: z.enum(["compact", "standard", "spacious"]).optional(),
+    width: z.enum(["contained", "full"]).optional(),
+    align: z.enum(["start", "center"]).optional(),
+    imageSide: z.enum(["start", "end"]).optional(),
+  })
+  .strict();
+export type SectionStyle = z.infer<typeof sectionStyleSchema>;
+
+/** Per-device visibility (AD-WEB-10). Hiding on every device is the same as `visible: false`. */
+export const sectionDevicesSchema = z
+  .object({ desktop: z.boolean().default(true), tablet: z.boolean().default(true), mobile: z.boolean().default(true) })
+  .strict();
+
+const blockBase = {
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+  visible: z.boolean().default(true),
+  style: sectionStyleSchema.optional(),
+  devices: sectionDevicesSchema.optional(),
+};
 
 /** Rich text as structured nodes — headings, paragraphs and lists. */
 const richNode = z.discriminatedUnion("type", [

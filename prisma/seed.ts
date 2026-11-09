@@ -81,67 +81,71 @@ async function main() {
       create: { slug: product.slug, ...data },
     });
 
-    await prisma.$transaction(async (tx) => {
-      await tx.optionGroup.deleteMany({ where: { productId: saved.id } });
-      for (const [stepOrder, step] of product.steps.entries()) {
-        await tx.optionGroup.create({
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.optionGroup.deleteMany({ where: { productId: saved.id } });
+        for (const [stepOrder, step] of product.steps.entries()) {
+          await tx.optionGroup.create({
+            data: {
+              productId: saved.id,
+              key: step.id,
+              label: step.title,
+              shortLabel: step.short ?? null,
+              hint: step.hint,
+              note: step.note ?? null,
+              kind: kindFor(step),
+              stepOrder,
+              defaultKeys: step.kind === "multi" ? step.defaultIds : [step.defaultId],
+              options: {
+                create: step.choices.map((choice, sort) => ({
+                  key: choice.id,
+                  label: choice.label,
+                  detail: choice.detail ?? null,
+                  swatch: choice.swatch ?? null,
+                  sort,
+                  isAvailable: !choice.unavailable,
+                  unavailableReason: choice.unavailable ?? null,
+                })),
+              },
+            },
+          });
+        }
+        await tx.artworkSlot.deleteMany({ where: { productId: saved.id } });
+        await tx.artworkSlot.createMany({
+          data: product.artwork.slots.map((label, sort) => ({
+            productId: saved.id,
+            key: label.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+            label,
+            printArea: product.artwork.printArea,
+            bleedMm: "3",
+            safeMm: "3",
+            sort,
+          })),
+        });
+
+        const document = pricingDocumentFor(product);
+        const current = await tx.pricingVersion.findFirst({ where: { productId: saved.id, status: "PUBLISHED" } });
+        if (current && canonical(current.document) === canonical(document)) return;
+        const last = await tx.pricingVersion.aggregate({ where: { productId: saved.id }, _max: { versionNo: true } });
+        if (current)
+          await tx.pricingVersion.update({
+            where: { id: current.id },
+            data: { status: "ARCHIVED", effectiveTo: new Date() },
+          });
+        await tx.pricingVersion.create({
           data: {
             productId: saved.id,
-            key: step.id,
-            label: step.title,
-            shortLabel: step.short ?? null,
-            hint: step.hint,
-            note: step.note ?? null,
-            kind: kindFor(step),
-            stepOrder,
-            defaultKeys: step.kind === "multi" ? step.defaultIds : [step.defaultId],
-            options: {
-              create: step.choices.map((choice, sort) => ({
-                key: choice.id,
-                label: choice.label,
-                detail: choice.detail ?? null,
-                swatch: choice.swatch ?? null,
-                sort,
-                isAvailable: !choice.unavailable,
-                unavailableReason: choice.unavailable ?? null,
-              })),
-            },
+            versionNo: (last._max.versionNo ?? 0) + 1,
+            status: "PUBLISHED",
+            document: document as Prisma.InputJsonValue,
+            note: "Seeded from reference data (D-08)",
+            publishedAt: new Date(),
           },
         });
-      }
-      await tx.artworkSlot.deleteMany({ where: { productId: saved.id } });
-      await tx.artworkSlot.createMany({
-        data: product.artwork.slots.map((label, sort) => ({
-          productId: saved.id,
-          key: label.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-          label,
-          printArea: product.artwork.printArea,
-          bleedMm: "3",
-          safeMm: "3",
-          sort,
-        })),
-      });
-
-      const document = pricingDocumentFor(product);
-      const current = await tx.pricingVersion.findFirst({ where: { productId: saved.id, status: "PUBLISHED" } });
-      if (current && canonical(current.document) === canonical(document)) return;
-      const last = await tx.pricingVersion.aggregate({ where: { productId: saved.id }, _max: { versionNo: true } });
-      if (current)
-        await tx.pricingVersion.update({
-          where: { id: current.id },
-          data: { status: "ARCHIVED", effectiveTo: new Date() },
-        });
-      await tx.pricingVersion.create({
-        data: {
-          productId: saved.id,
-          versionNo: (last._max.versionNo ?? 0) + 1,
-          status: "PUBLISHED",
-          document: document as Prisma.InputJsonValue,
-          note: "Seeded from reference data (D-08)",
-          publishedAt: new Date(),
-        },
-      });
-    });
+        // A remote database (e.g. Neon in another region) needs longer than Prisma's 5 s default.
+      },
+      { timeout: 120_000, maxWait: 20_000 },
+    );
   }
 
   // Staff roles: created once (later edits by an Owner are kept); Owner is always synced to every permission.

@@ -207,6 +207,24 @@ describe("permissions", () => {
       .send({ token, password: PASSWORD })
       .expect(410);
     expect(reused.body.code).toBe("INVITATION_INVALID");
+
+    // Left before finishing authenticator set-up: signing in again resumes enrolment, and the
+    // account only becomes ACTIVE once a valid code is entered.
+    const again = request.agent(http);
+    const resumed = await again
+      .post("/api/v1/admin/auth/login")
+      .send({ email: `prepress-${run}@example.com`, password: PASSWORD })
+      .expect(200);
+    expect(resumed.body.next).toBe("enroll");
+    const pending = await prisma.user.findUniqueOrThrow({ where: { email: `prepress-${run}@example.com` } });
+    expect(pending.staffStatus).toBe("INVITED");
+    await again
+      .post("/api/v1/admin/auth/totp")
+      .set("x-csrf-token", resumed.body.csrfToken)
+      .send({ code: totp(resumed.body.totpSecret) })
+      .expect(200);
+    const active = await prisma.user.findUniqueOrThrow({ where: { id: pending.id } });
+    expect(active.staffStatus).toBe("ACTIVE");
   });
 });
 

@@ -102,7 +102,10 @@ export class AuthService {
       );
 
     const ok = await argonVerify(user.passwordHash, password).catch(() => false);
-    if (!ok || user.staffStatus !== "ACTIVE") {
+    // An invited person who chose a password but didn't finish authenticator set-up may sign in to
+    // finish it (they still need the second factor; the account turns ACTIVE only after it).
+    const finishingInvite = user.staffStatus === "INVITED" && !user.totpEnabledAt;
+    if (!ok || (user.staffStatus !== "ACTIVE" && !finishingInvite)) {
       await this.recordFailure(user, ctx, ok ? "login.inactive" : "login.failed");
       throw invalid();
     }

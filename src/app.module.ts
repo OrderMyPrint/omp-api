@@ -8,6 +8,7 @@ import { ContentModule } from "./content/content.module";
 import { HealthController } from "./health/health.controller";
 import { PricingModule } from "./pricing/pricing.module";
 import { PrismaModule } from "./prisma/prisma.module";
+import { SalesModule } from "./sales/sales.module";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { PrismaModule } from "./prisma/prisma.module";
     PricingModule,
     AuthModule,
     ContentModule,
+    SalesModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

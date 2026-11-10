@@ -90,6 +90,7 @@ model Product {
   optionGroups      OptionGroup[]
   artworkSlots      ArtworkSlot[]
   pricingVersions   PricingVersion[]
+  quoteLines        QuoteLine[]
   optionRules       OptionRule[]
   cartItems         CartItem[]
   orderItems        OrderItem[]
@@ -231,6 +232,9 @@ model User {
   cart             Cart?
   orders           Order[]
   invitations      StaffInvitation[] @relation("InvitedUser")
+  companies        CompanyMember[]
+  quotesAsCustomer Quote[]           @relation("QuoteCustomer")
+  quotesAssigned   Quote[]           @relation("QuoteAssignee")
 
   @@index([roleId])
   @@map("users")
@@ -703,4 +707,134 @@ model Refund {
 
   @@index([orderId])
   @@map("refunds")
+}
+
+// ------------------------------------------------------------ customers & quotations (AD-CUS, AD-QUO)
+
+enum CompanyRole {
+  ADMIN
+  MEMBER
+}
+
+/// A business account grouping customers (AD-CUS-02). Credit terms need credit_terms.approve (audited).
+model Company {
+  id                 String          @id @default(uuid()) @db.Uuid
+  name               String
+  gstin              String?         @unique
+  creditEnabled      Boolean         @default(false) @map("credit_enabled")
+  creditTermsDays    Int?            @map("credit_terms_days")
+  creditApprovedById String?         @map("credit_approved_by_id") @db.Uuid
+  creditApprovedAt   DateTime?       @map("credit_approved_at")
+  notes              String?
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+  members            CompanyMember[]
+  quotes             Quote[]
+
+  @@map("companies")
+}
+
+model CompanyMember {
+  companyId String      @map("company_id") @db.Uuid
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId    String      @map("user_id") @db.Uuid
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      CompanyRole @default(MEMBER)
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  @@id([companyId, userId])
+  @@index([userId])
+  @@map("company_members")
+}
+
+enum QuoteStatus {
+  REQUESTED
+  UNDER_REVIEW
+  SENT
+  CLARIFICATION
+  ACCEPTED
+  DECLINED
+}
+
+/// Yearly quote-number counter (Q-2026-0001).
+model QuoteSequence {
+  year Int @id
+  last Int @default(0)
+
+  @@map("quote_sequences")
+}
+
+/// A bulk / corporate quotation (AD-QUO-01/02). Money is stored as decimals; totals are recomputed on every line change.
+model Quote {
+  id             String          @id @default(uuid()) @db.Uuid
+  number         String          @unique
+  status         QuoteStatus     @default(REQUESTED)
+  /// "web" (storefront request form) or "staff".
+  source         String
+  /// {name, phone, email}
+  contact        Json
+  companyName    String?         @map("company_name")
+  gstin          String?
+  companyId      String?         @map("company_id") @db.Uuid
+  company        Company?        @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  customerId     String?         @map("customer_id") @db.Uuid
+  customer       User?           @relation("QuoteCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+  assignedToId   String?         @map("assigned_to_id") @db.Uuid
+  assignedTo     User?           @relation("QuoteAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  /// What the customer asked for on the web form, as submitted.
+  request        Json?
+  notes          String?
+  overrideReason String?         @map("override_reason")
+  shippingAmount Decimal         @default(0) @map("shipping_amount") @db.Decimal(12, 2)
+  subtotal       Decimal         @default(0) @db.Decimal(12, 2)
+  taxTotal       Decimal         @default(0) @map("tax_total") @db.Decimal(12, 2)
+  grandTotal     Decimal         @default(0) @map("grand_total") @db.Decimal(12, 2)
+  validUntil     DateTime?       @map("valid_until")
+  revision       Int             @default(0)
+  sentAt         DateTime?       @map("sent_at")
+  decidedAt      DateTime?       @map("decided_at")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  lines          QuoteLine[]
+  revisions      QuoteRevision[]
+
+  @@index([status, updatedAt])
+  @@map("quotes")
+}
+
+model QuoteLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  quoteId         String   @map("quote_id") @db.Uuid
+  quote           Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  sort            Int
+  productId       String?  @map("product_id") @db.Uuid
+  product         Product? @relation(fields: [productId], references: [id], onDelete: Restrict)
+  /// Selected options for engine pricing ({groupKey: optionKey | optionKey[]}).
+  config          Json?
+  description     String
+  quantity        Int
+  /// Unit price from the pricing engine (null for free-text lines).
+  engineUnitPrice Decimal? @map("engine_unit_price") @db.Decimal(12, 4)
+  unitPrice       Decimal  @map("unit_price") @db.Decimal(12, 4)
+  gstRate         Decimal  @map("gst_rate") @db.Decimal(5, 2)
+  lineSubtotal    Decimal  @map("line_subtotal") @db.Decimal(12, 2)
+  taxAmount       Decimal  @map("tax_amount") @db.Decimal(12, 2)
+  lineTotal       Decimal  @map("line_total") @db.Decimal(12, 2)
+
+  @@index([quoteId])
+  @@map("quote_lines")
+}
+
+/// What was sent to the customer at each revision (immutable snapshot).
+model QuoteRevision {
+  id       String   @id @default(uuid()) @db.Uuid
+  quoteId  String   @map("quote_id") @db.Uuid
+  quote    Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  revision Int
+  snapshot Json
+  sentById String?  @map("sent_by_id") @db.Uuid
+  sentAt   DateTime @default(now()) @map("sent_at")
+
+  @@unique([quoteId, revision])
+  @@map("quote_revisions")
 }

@@ -24,6 +24,13 @@ export default function setup() {
       "DELETE FROM redirects;",
       // Catalogue admin fixtures: drafts, test categories and visibility (the seed resets the rest).
       // Commerce fixtures: customers, carts and orders from earlier runs.
+      // Sales fixtures: quotations and company accounts.
+      "DELETE FROM quote_revisions;",
+      "DELETE FROM quote_lines;",
+      "DELETE FROM quotes;",
+      "DELETE FROM quote_sequences;",
+      "DELETE FROM company_members;",
+      "DELETE FROM companies;",
       "DELETE FROM payment_events;",
       "DELETE FROM refunds;",
       "DELETE FROM payments;",

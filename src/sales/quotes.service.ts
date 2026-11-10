@@ -236,7 +236,10 @@ export class QuotesService {
     });
     const items = input.items.map((i) => ({
       ...i,
-      productName: products.find((p) => p.slug === i.productSlug)?.name ?? i.productSlug,
+      // The form offers "Something else" (slug "other") for products that aren't in the catalogue.
+      productName:
+        products.find((p) => p.slug === i.productSlug)?.name ??
+        (i.productSlug === "other" ? "Something else" : i.productSlug),
     }));
     const customer = await this.prisma.user.findFirst({ where: { phoneE164: contact.phone, kind: "CUSTOMER" } });
     const quote = await this.prisma.$transaction(

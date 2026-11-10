@@ -149,13 +149,24 @@ export class QuotesService {
             .slice(0, 2)
             .map((l) => `${l.quantity.toLocaleString("en-IN")} × ${l.description.split(" · ")[0]}`)
             .join(", ")}`
-        : "No lines yet",
+        : this.requestSummary(q.request),
       total: q.lines.length ? money(q.grandTotal) : null,
       revision: q.revision,
       validUntil: q.validUntil,
       assignedTo: q.assignedTo,
       updatedAt: q.updatedAt,
     }));
+  }
+
+  /** Card text for a website request that hasn't been priced yet. */
+  private requestSummary(request: Prisma.JsonValue | null) {
+    const items = (request as { items?: { productName: string; quantity: number }[] } | null)?.items ?? [];
+    return items.length
+      ? `Asked for ${items
+          .slice(0, 2)
+          .map((i) => `${i.quantity.toLocaleString("en-IN")} × ${i.productName}`)
+          .join(", ")}${items.length > 2 ? ` +${items.length - 2} more` : ""}`
+      : "No lines yet";
   }
 
   async get(id: string) {
